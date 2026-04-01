@@ -1,0 +1,21 @@
+# Secrets & local env
+.env
+*.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.mypy_cache/
+.ruff_cache/
+
+# Dev tooling
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Agent rules (private)
+_agents/
+
+# AdamEden is a SIBLING REPO at d:/work/AdamEden — not tracked here
