@@ -78,14 +78,15 @@ class ArchangelDaemon:
         try:
             container = self.client.containers.run(
                 "adam_base",
-                command="python main.py",
+                # 启动时先安装 requirements.txt，确保 Adam 新增的包在重启后仍然可用
+                # 用 || true 确保 pip 失败时 python 仍然启动（避免网络超时时死循环）
+                command="sh -c 'pip install --quiet --default-timeout=60 -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt || echo \"[WARN] pip install failed, starting anyway\" && python main.py'",
                 name=container_name,
                 volumes={
                     self.adam_repo_path: {'bind': '/app', 'mode': 'rw'},
-                    os.path.join(self.adam_repo_path, "data", "Bible.md"): {'bind': '/app/data/Bible.md', 'mode': 'ro'}
                 },
                 extra_hosts={"host.docker.internal": "host-gateway"},
-                network_mode="bridge",  # Or 'none' if we want totally internet isolation
+                network_mode="bridge",
                 detach=False
             )
             return True, ""
@@ -129,6 +130,8 @@ class ArchangelDaemon:
                             self.client.images.build(path=self.adam_repo_path, tag="adam_base")
                     else:
                         logger.info("Adam session ended peacefully without mutation. (Possible manual shutdown or logic error)")
+                        # 如果 requirements.txt 当前内容与镜像不同，也需要重建
+                        # 这处不需要，因为 command 里已经包含了 startup pip install
                 
             except Exception as e:
                 logger.error(f"Archangel internal error: {e}", exc_info=True)
