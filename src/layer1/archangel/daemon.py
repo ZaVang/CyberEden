@@ -76,11 +76,12 @@ class ArchangelDaemon:
             self.client.images.build(path=self.adam_repo_path, tag="adam_base")
 
         try:
-            container = self.client.containers.run(
+            # 执行容器，将输出记录下来
+            logs_bytes = self.client.containers.run(
                 "adam_base",
-                # 启动时先安装 requirements.txt，确保 Adam 新增的包在重启后仍然可用
-                # 用 || true 确保 pip 失败时 python 仍然启动（避免网络超时时死循环）
-                command="sh -c 'pip install --quiet --default-timeout=60 -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt || echo \"[WARN] pip install failed, starting anyway\" && python main.py'",
+                # 使用分号确保即使 pip 失败（如网络问题、requirements 冲突），也尝试启动 Adam
+                # 这样 Adam 可以在日志中看到具体错误并自行决定如何修复
+                command="sh -c 'pip install --quiet --default-timeout=100 -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt ; python main.py'",
                 name=container_name,
                 volumes={
                     self.adam_repo_path: {'bind': '/app', 'mode': 'rw'},
@@ -89,12 +90,13 @@ class ArchangelDaemon:
                 network_mode="bridge",
                 detach=False
             )
-            return True, ""
+            logs_str = logs_bytes.decode("utf-8", errors="replace") if logs_bytes else ""
+            return True, logs_str
         except ContainerError as e:
-            # Container crashed (non-zero exit code)
+            # 容器以非零状态码退出
             logs = e.container.logs()
             try:
-                logs_str = logs.decode("utf-8")
+                logs_str = logs.decode("utf-8", errors="replace")
             except Exception:
                 logs_str = str(logs)
             return False, logs_str
@@ -110,6 +112,13 @@ class ArchangelDaemon:
             try:
                 success, logs = self.reincarnate_adam()
                 
+                # 无论成功还是失败，都打印容器内部的关键日志，方便调试
+                if logs.strip():
+                    logger.info("--- Adam's Logs Start ---")
+                    for line in logs.strip().splitlines()[-20:]: # 只显示最后20行
+                        logger.info(f"  [Adam] {line}")
+                    logger.info("--- Adam's Logs End ---")
+
                 if not success:
                     logger.error("Adam has DIED (Container Crash). Preparing resurrect protocol.")
                     self.git_rollback()
