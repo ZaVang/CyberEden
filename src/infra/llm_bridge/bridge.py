@@ -71,7 +71,7 @@ class LLMBridge:
         """
         发起一次 LLM 对话，内置完整的指数退避重试保护。
 
-        Parameters
+        Parameters  
         ----------
         messages:
             对话消息列表，格式为 [{"role": "user"|"assistant", "content": "..."}]

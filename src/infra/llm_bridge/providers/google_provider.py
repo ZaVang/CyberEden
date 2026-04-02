@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import httpx
 from typing import Any, Optional, Type
 
 from google import genai
@@ -35,6 +36,8 @@ def _build_retryable_exceptions() -> tuple[type[BaseException], ...]:
             gax_exc.ResourceExhausted,   # 429 Rate Limit
             gax_exc.DeadlineExceeded,    # 请求超时
             gax_exc.InternalServerError, # 5xx
+            httpx.HTTPError,             # 包括所有的 httpx 错误
+            httpx.RemoteProtocolError,   # 特别针对协议中断
             ConnectionError,
             TimeoutError,
         )

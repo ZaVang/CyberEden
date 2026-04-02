@@ -58,7 +58,7 @@ class UnifiedResponse(BaseModel):
 class ChatParameters(BaseModel):
     """发起 LLM 对话时可传入的可选参数。"""
 
-    max_tokens: Optional[int] = Field(default=8192, description="最大输出 Token 数。")
+    max_tokens: Optional[int] = Field(default=60000, description="最大输出 Token 数。")
     temperature: Optional[float] = Field(default=0.7, description="采样温度，0.0 为确定性最高。")
     system_prompt: Optional[str] = Field(default=None, description="系统级指令，会被注入为 system_instruction。")
     response_model: Optional[Type[BaseModel]] = Field(

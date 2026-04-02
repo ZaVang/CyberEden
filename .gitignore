@@ -19,3 +19,6 @@ venv/
 _agents/
 
 # AdamEden is a SIBLING REPO at d:/work/AdamEden — not tracked here
+
+# Runtime logs (can grow large)
+logs/
