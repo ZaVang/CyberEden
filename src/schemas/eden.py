@@ -48,7 +48,7 @@ class ActionPlan(BaseModel):
         None,
         description=(
             "要追加到 data/Diary.md 的记忆片段。"
-            "只在有值得记录的重要发现时才填写，否则置为 null。"
+            "⚠️绝对禁止记录阅读步骤或无效信息（如'我读了X文件'）。只有在架构重构、完成神谕或做出重大决策时才写入，并保持格式精简专业。否则置为 null。"
         ),
     )
     shell_commands: List[str] = Field(

@@ -56,9 +56,10 @@ class ArchangelDaemon:
             f.write("【Archangel Death Report】\nYou crashed in the last epoch. Here is the stack trace:\n\n")
             f.write(log_content)
             
-    def reincarnate_adam(self):
-        """Run the docker container synchronously until it exits."""
-        logger.info("Reincarnating Adam in docker sandbox...")
+    async def reincarnate_adam(self):
+        """Run the docker container asynchronously and monitor its heartbeat."""
+        import time
+        logger.info("Reincarnating Adam in docker sandbox (Watchdog Mode)...")
         container_name = "adam_instance"
         
         # Cleanup
@@ -75,12 +76,16 @@ class ArchangelDaemon:
             logger.info("Building adam_base Docker image from scratch. This may take a minute...")
             self.client.images.build(path=self.adam_repo_path, tag="adam_base")
 
+        # Initialize heartbeat
+        heartbeat_file = os.path.join(self.adam_repo_path, "data", "heartbeat.txt")
+        os.makedirs(os.path.dirname(heartbeat_file), exist_ok=True)
+        with open(heartbeat_file, 'w', encoding='utf-8') as f:
+            f.write(str(time.time()))
+
         try:
-            # 执行容器，将输出记录下来
-            logs_bytes = self.client.containers.run(
+            # 采用分离模式并在后台定期检查状态
+            container = self.client.containers.run(
                 "adam_base",
-                # 使用分号确保即使 pip 失败（如网络问题、requirements 冲突），也尝试启动 Adam
-                # 这样 Adam 可以在日志中看到具体错误并自行决定如何修复
                 command="sh -c 'pip install --quiet --default-timeout=100 -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt ; python main.py'",
                 name=container_name,
                 volumes={
@@ -88,12 +93,33 @@ class ArchangelDaemon:
                 },
                 extra_hosts={"host.docker.internal": "host-gateway"},
                 network_mode="bridge",
-                detach=False
+                detach=True
             )
-            logs_str = logs_bytes.decode("utf-8", errors="replace") if logs_bytes else ""
-            return True, logs_str
+            
+            while True:
+                container.reload()
+                if container.status == "exited":
+                    exit_code = container.attrs['State']['ExitCode']
+                    logs = container.logs().decode("utf-8", errors="replace")
+                    container.remove()
+                    return exit_code == 0, logs
+
+                # Heartbeat watchdog check (180s threshold)
+                try:
+                    if os.path.exists(heartbeat_file):
+                        mtime = os.path.getmtime(heartbeat_file)
+                        if time.time() - mtime > 180:
+                            logs = container.logs().decode("utf-8", errors="replace")
+                            logs += "\n\n[SYSTEM CRITICAL] ARCHANGEL DETECTED VEGETATIVE STATE (No heartbeat for 180s).\n[SYSTEM CRITICAL] FORCING CONTAINER SHUTDOWN AND ROLLBACK."
+                            container.stop(timeout=2)
+                            container.remove(force=True)
+                            return False, logs
+                except Exception as e:
+                    logger.debug(f"Heartbeat check error: {e}")
+                
+                await asyncio.sleep(5)
+
         except ContainerError as e:
-            # 容器以非零状态码退出
             logs = e.container.logs()
             try:
                 logs_str = logs.decode("utf-8", errors="replace")
@@ -110,7 +136,7 @@ class ArchangelDaemon:
 
         while True:
             try:
-                success, logs = self.reincarnate_adam()
+                success, logs = await self.reincarnate_adam()
                 
                 # 无论成功还是失败，都打印容器内部的关键日志，方便调试
                 if logs.strip():
