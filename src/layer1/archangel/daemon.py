@@ -9,6 +9,11 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
+from src.infra.llm_bridge import LLMBridge
+from src.infra.llm_bridge.models import ChatParameters
+
 logger = logging.getLogger("archangel")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] ARCHANGEL - %(message)s")
 
@@ -56,6 +61,78 @@ class ArchangelDaemon:
             f.write("【Archangel Death Report】\nYou crashed in the last epoch. Here is the stack trace:\n\n")
             f.write(log_content)
             
+    async def auto_repair_adam(self, logs: str) -> bool:
+        """Autonomously ask the LLM to patch the broken repo before rolling back."""
+        logger.info("Engaging Archangel Auto-Repair sequence...")
+        try:
+            # 1. Collect context (diff & logs)
+            diff_res = subprocess.run(["git", "diff", "HEAD"], cwd=self.adam_repo_path, capture_output=True, text=True)
+            head_diff = diff_res.stdout
+            
+            # Since git status could include newly created uncommitted files not in diff:
+            status_res = subprocess.run(["git", "status", "--porcelain"], cwd=self.adam_repo_path, capture_output=True, text=True)
+            
+            prompt = f"""You are the Archangel Auto-Repair Daemon. The autonomous agent Adam has crashed.
+Recent uncommitted state (git status):
+{status_res.stdout}
+
+Recent code body mutations (git diff HEAD):
+```diff
+{head_diff}
+```
+
+Crash log (stack trace):
+```log
+{logs}
+```
+
+Your task: Output a valid Python script that, when executed inside the {self.adam_repo_path} directory, will forcefully fix the issue so Adam can successfully reincarnate (e.g. by rewriting files, updating requirements.txt, or fixing syntax errors).
+Do not provide explanations. Output ONLY the raw Python code wrapped in ```python ... ```.
+"""
+            # 2. Query LLM
+            bridge = LLMBridge.from_env()
+            response = await bridge.chat(
+                messages=[{"role": "user", "content": prompt}],
+                params=ChatParameters(),
+                system_prompt="You are a silent code-fixing script generator. Your only output is Python code that modifies files to fix bugs."
+            )
+            
+            # 3. Extract and execute script
+            reply = response.content
+            if "```python" in reply:
+                code = reply.split("```python")[1].split("```")[0].strip()
+            elif "```" in reply:
+                code = reply.split("```")[1].strip()
+            else:
+                code = reply.strip()
+                
+            if not code or len(code) < 5:
+                logger.warning("LLM generated an empty repair script.")
+                return False
+                
+            script_path = os.path.join(self.adam_repo_path, ".archangel_repair.py")
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write(code)
+                
+            logger.info("Executing auto-repair python script...")
+            repair_res = subprocess.run(["python", ".archangel_repair.py"], cwd=self.adam_repo_path, capture_output=True, text=True)
+            
+            if os.path.exists(script_path):
+                os.remove(script_path)
+            
+            if repair_res.returncode == 0:
+                logger.info("Auto-Repair applied successfully. Committing as a healing snapshot.")
+                subprocess.run(["git", "add", "-A"], cwd=self.adam_repo_path)
+                subprocess.run(["git", "commit", "-m", "Archangel Auto-Repair Snapshot"], cwd=self.adam_repo_path)
+                return True
+            else:
+                logger.error(f"Auto-repair script crashed! {repair_res.stderr}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Auto-Repair failed critically: {e}")
+            return False
+
     async def reincarnate_adam(self):
         """Run the docker container asynchronously and monitor its heartbeat."""
         import time
@@ -96,8 +173,30 @@ class ArchangelDaemon:
                 detach=True
             )
             
-            while True:
+            while container.status == 'running' or container.status == 'created':
+                import time
+                time.sleep(5)
                 container.reload()
+                
+                # Semantic Watchdog: Rule-based repetition detector
+                try:
+                    current_logs = container.logs(tail=20).decode("utf-8", errors="replace").splitlines()
+                    if len(current_logs) >= 10:
+                        # strip timestamp (usually ~35 chars "2026-04-07 12:00:00,000 [INFO] ...")
+                        # We use simple string matching after splitting by "]" which usually wraps the log level
+                        core_lines = []
+                        for line in current_logs[-10:]:
+                            if "]" in line:
+                                core_lines.append(line.split("]", 1)[1].strip())
+                            else:
+                                core_lines.append(line.strip())
+                        
+                        if len(set(core_lines)) == 1 and bool(core_lines[0]):
+                            logger.error("Semantic Watchdog: Detected infinite meaningless vegetative loop. Terminating.")
+                            container.kill()
+                            return False, "\n".join(current_logs)
+                except Exception:
+                    pass
                 if container.status == "exited":
                     exit_code = container.attrs['State']['ExitCode']
                     logs = container.logs().decode("utf-8", errors="replace")
@@ -146,9 +245,19 @@ class ArchangelDaemon:
                     logger.info("--- Adam's Logs End ---")
 
                 if not success:
-                    logger.error("Adam has DIED (Container Crash). Preparing resurrect protocol.")
-                    self.git_rollback()
-                    self.write_nightmare(logs)
+                    logger.error("Adam has DIED (Container Crash). Triggering Archangel Auto-Repair...")
+                    repaired = await self.auto_repair_adam(logs)
+                    if repaired:
+                        logger.info("Auto-Repair succeeded. Reincarnating directly to test the fixed body.")
+                        # Check if requirements.txt was changed
+                        res = subprocess.run(["git", "diff", "HEAD~1", "--name-only", "requirements.txt"], cwd=self.adam_repo_path, capture_output=True, text=True)
+                        if "requirements.txt" in res.stdout:
+                            logger.info("Detected changes in requirements.txt from repair. Rebuilding adam_base image...")
+                            self.client.images.build(path=self.adam_repo_path, tag="adam_base")
+                    else:
+                        logger.warning("Auto-Repair failed or gave up. Preparing strict resurrect protocol.")
+                        self.git_rollback()
+                        self.write_nightmare(logs)
                 else:
                     if self.get_git_status():
                         logger.info("Adam mutated himself and exited for reincarnation. Snapshoting...")
